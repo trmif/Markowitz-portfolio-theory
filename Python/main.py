@@ -1,13 +1,25 @@
-from pandas_datareader import data as pdr
-import pandas as pd
 import numpy as np
+import pandas as pd
+from pandas_datareader import data as pdr
 import yfinance as yf
 import matplotlib.pyplot as plt
-import scipy.optimize as sc
+from typing import List, Tuple
+
 
 yf.pdr_override()
 
-def getData(stocks, start, end):
+
+def getData(stocks: List[str], start: str, end: str) -> Tuple[pd.Series, pd.DataFrame]:
+    """Ф-ия собирает данные о котировках акций на американском рынке
+
+    Args:
+        stocks (List[str]): Список тикеров
+        start (str): Дата начала отсчета
+        end (str): Дата конца отсчета
+
+    Returns:
+        Tuple[pd.Series, pd.DataFrame]: Возвращает среднюю доходность и ковариационную матрицу
+    """
     stockData = pdr.get_data_yahoo(stocks, start=start, end=end)
     stockData = stockData['Adj Close']
     returns = stockData.pct_change()
@@ -15,117 +27,95 @@ def getData(stocks, start, end):
     covMatrix = returns.cov()
     return meanReturns, covMatrix
 
-def portfolioPerformance(weights, meanReturns, covMatrix):
-    returns = np.sum(meanReturns*weights)*252
-    std = np.sqrt(
-            np.dot(weights.T,np.dot(covMatrix, weights)))*np.sqrt(252)
-    return returns, std
+def portfolioPerformance(weights: List[float], meanReturns: pd.Series, covMatrix: pd.DataFrame) -> Tuple[float, float]:
+    """Ф-ия считает доходность и риск портфеля
 
-def portfolioVariance(weights, meanReturns, covMatrix):
-    return portfolioPerformance(weights, meanReturns, covMatrix)[1]
+    Args:
+        weights (List[float]): Веса для каждой акции в портфеле
+        meanReturns (pd.Series): Средняя доходность акций
+        covMatrix (pd.DataFrame): Ковариационная матрица
 
-def portfolioReturn(weights, meanReturns, covMatrix):
-    return portfolioPerformance(weights, meanReturns, covMatrix)[0]
+    Returns:
+        Tuple[float, float]: Возвращает доходность и риск портфеля
+    """
+    returns = np.sum(meanReturns * weights) * 252
+    std = np.sqrt(np.dot(weights, np.dot(covMatrix, weights))) * np.sqrt(252)
+    return returns * 100, std * 100
 
-def negativeSR(weights, meanReturns, covMatrix, riskFreeRate = 0):
-    pReturns, pStd = portfolioPerformance(weights, meanReturns, covMatrix)
-    return - (pReturns - riskFreeRate)/pStd
+def efficientFrontier(meanReturns: pd.Series, covMatrix: pd.DataFrame, numPortfolios: int, riskFreeRate: float) -> Tuple[np.ndarray, List[np.ndarray], float, np.ndarray]:
+    """Ф-ия строит эффективный фронт и находит портфель с максимльным Sharpe Ratio при заданном безрисковом активе
 
-def maxSR(meanReturns, covMatrix, riskFreeRate = 0, constraintSet=(0,1)):
-    
-    "Minimize the negative SR, by altering the weights of the portfolio"
-    
-    numAssets = len(meanReturns)
-    args = (meanReturns, covMatrix, riskFreeRate)
-    constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-    bound = constraintSet
-    bounds = tuple(bound for _ in range(numAssets))
-    result = sc.minimize(negativeSR, numAssets*[1./numAssets], args=args,
-                        method='SLSQP', bounds=bounds, constraints=constraints)
-    return result
+    Args:
+        meanReturns (pd.Series): Средняя доходность акций
+        covMatrix (pd.DataFrame): Ковариационная матрица
+        numPortfolios (int): Количество портфелей для генерации
+        riskFreeRate (float): Безрисковая ставка(в процентах)
 
+    Returns:
+        Tuple[np.ndarray, List[np.ndarray], float, np.ndarray]: Возвращает эффективный фронт, веса портфелей, максимальный Sharpe Ratio и веса портфеля с максимальным Sharpe Ratio
+    """
+    results = np.zeros((3, numPortfolios))
+    weights_record = []
+    max_sharpe_ratio = -1
+    max_sharpe_weights = np.array([])
 
+    for i in range(numPortfolios):
+        weights = np.random.random(len(meanReturns))
+        weights /= np.sum(weights)
+        weights_record.append(weights)
+        portfolio_return, portfolio_std = portfolioPerformance(weights, meanReturns, covMatrix)
+        sharpe_ratio = (portfolio_return - riskFreeRate) / portfolio_std
 
-# def minimizeVariance(meanReturns, covMatrix, constraintSet=(0,1)):
-#     """Minimize the portfolio variance by altering the 
-#     weights/allocation of assets in the portfolio"""
-#     numAssets = len(meanReturns)
-#     args = (meanReturns, covMatrix)
-#     constraints = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-#     bound = constraintSet
-#     bounds = tuple(bound for _ in range(numAssets))
-#     result = sc.minimize(portfolioVariance, numAssets*[1./numAssets], args=args,
-#                         method='SLSQP', bounds=bounds, constraints=constraints)
-#     return result
+        if sharpe_ratio > max_sharpe_ratio:
+            max_sharpe_ratio = sharpe_ratio
+            max_sharpe_weights = weights
 
-# def efficientOpt(meanReturns, covMatrix, returnTarget, constraintSet=(0,1)):
-#     """For each returnTarget, we want to optimise the portfolio for min variance"""
-#     numAssets = len(meanReturns)
-#     args = (meanReturns, covMatrix)
-#     constraints = ({'type':'eq', 'fun': lambda x: portfolioReturn(x, meanReturns, covMatrix) - returnTarget},
-#                     {'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
-#     bound = constraintSet
-#     bounds = tuple(bound for _ in range(numAssets))
-#     effOpt = sc.minimize(portfolioVariance, numAssets*[1./numAssets], args=args, method = 'SLSQP', bounds=bounds, constraints=constraints)
-#     return effOpt
+        results[0, i] = portfolio_std
+        results[1, i] = portfolio_return
+        results[2, i] = sharpe_ratio
 
-# def calculatedResults(meanReturns, covMatrix, riskFreeRate=0, constraintSet=(0,1)):
-#     """Read in mean, cov matrix, and other financial information
-#         Output, Max SR , Min Volatility, efficient frontier """
-        
-#     # Max Sharpe Ratio Portfolio
-#     maxSR_Portfolio = maxSR(meanReturns, covMatrix)
-#     maxSR_returns, maxSR_std = portfolioPerformance(maxSR_Portfolio['x'], meanReturns, covMatrix)
-#     maxSR_returns, maxSR_std = round(maxSR_returns*100,2), round(maxSR_std*100,2)
-#     maxSR_allocation = pd.DataFrame(maxSR_Portfolio['x'], index=meanReturns.index, columns=['allocation'])
-#     maxSR_allocation.allocation = [round(i*100,0) for i in maxSR_allocation.allocation]
-    
-#     # Min Volatility Portfolio
-#     minVol_Portfolio = minimizeVariance(meanReturns, covMatrix)
-#     minVol_returns, minVol_std = portfolioPerformance(minVol_Portfolio['x'], meanReturns, covMatrix)
-#     minVol_returns, minVol_std = round(minVol_returns*100,2), round(minVol_std*100,2)
-#     minVol_allocation = pd.DataFrame(minVol_Portfolio['x'], index=meanReturns.index, columns=['allocation'])
-#     minVol_allocation.allocation = [round(i*100,0) for i in minVol_allocation.allocation]
-    
-#     # Efficient Frontier
-#     efficientList = []
-#     targetReturns = np.linspace(minVol_returns, maxSR_returns, 20)
-    
-#     for target in targetReturns:
-#         efficientList.append(efficientOpt(meanReturns, covMatrix, target)['fun'])
-        
-
-#     return maxSR_returns, maxSR_std, maxSR_allocation, minVol_returns, minVol_std, minVol_allocation, efficientList, targetReturns
+    return results, weights_record, max_sharpe_ratio, max_sharpe_weights
 
 
-# def EF_graph(meanReturns, covMatrix, riskFreeRate=0, constraintSet=(0,1)):
-    
-#     maxSR_returns, maxSR_std, maxSR_allocation, minVol_returns, minVol_std, minVol_allocation, efficientList, targetReturns = calculatedResults(meanReturns, covMatrix, riskFreeRate, constraintSet)
+def plot_efficient_frontier(results: np.ndarray, stocks: List[str], max_sr_volatility: float, max_sr_return: float, max_SR_weights: np.ndarray, riskFreeRate: float) -> None:
+    """_summary_
 
-#     plt.figure(figsize=(10, 6))
-#     plt.plot([round(ef_std*100, 2) for ef_std in efficientList], [round(target*100,2) for target in targetReturns], 'g-', label='Efficient Frontier')
+    Args:
+        results (np.ndarray): Наиболее эффективные порфтели
+        stocks (List[str]): Список акций
+        max_sr_volatility (float): Волатильность портфеля с максимальным Sharpe ratio
+        max_sr_return (float): Доходность портфеля с максимальным Sharpe Ratio
+        max_SR_weights (np.ndarray): Распределение весов в портфеле с максимальным Sharpe Ratio
+        riskFreeRate (float): Безрисковая ставка
+    """
+    annotation_text = 'Max Sharpe Ratio Weights:\n' + '\n'.join([f'{stock}: {weight:.2f}' for stock, weight in zip(stocks, max_SR_weights)])
 
+    plt.annotate(annotation_text, (0,0), color='blue', xytext=(20,10), textcoords="offset points")
 
-#     plt.plot(maxSR_std, maxSR_returns, 'r*', markersize=15, label='Max Sharpe Ratio Portfolio')
-#     plt.plot(minVol_std, minVol_returns, 'b*', markersize=15, label='Min Volatility Portfolio')
-#     print(maxSR_std,maxSR_returns)
-    
-#     plt.title('Efficient Frontier with Max Sharpe Ratio and Min Volatility Portfolios')
-#     plt.xlabel('Portfolio Risk (Standard Deviation)')
-#     plt.ylabel('Portfolio Expected Return')
-    
-#     plt.ylim(0,100)
-#     plt.xlim(0,100)
-    
-#     plt.legend()
-#     plt.grid(True)
-#     plt.show()
+    slope = (max_sr_return - riskFreeRate) / max_sr_volatility
+    line_x = np.linspace(0, max_sr_volatility, 100)
+    line_y = riskFreeRate + slope * line_x
+    plt.plot(line_x, line_y, color='green', linestyle='--')
 
+    plt.scatter(results[0,:], results[1,:], c=results[2,:], cmap='YlGnBu', marker='o')
+    plt.scatter(max_sr_volatility, max_sr_return, color='red', marker="*", s=100)
 
-start_date = '2023-01-01'
-end_date = '2023-12-31'
+    plt.title('Efficient Frontier')
+    plt.xlabel('Volatility (%)')
+    plt.ylabel('Expected Returns (%)')
+    plt.colorbar(label='Sharpe Ratio')
+    plt.xlim(0, 30)
+    plt.ylim(0, 30)
+    plt.show()
 
-stocks = ['IBM', 'AAPL', 'AMZN', 'GOOGL', 'MSFT', 'TSLA', 'NVDA']
+if __name__ == "__main__":
+    stocks_input = [stock.strip() for stock in input("Введите список акций через запятую (например: AAPL, MSFT, GOOG): ").split(',')]
+    start_date = input("Введите начальную дату (например: 2010-01-01): ")
+    end_date = input("Введите конечную дату (например: 2020-01-01): ")
+    numPortfolios = int(input("Введите количество портфелей для анализа: "))
+    riskFreeRate = float(input("Введите безрисковую процентную ставку (например, 25): "))
 
-meanReturns, covMatrix = getData(stocks, start_date, end_date)
-
+    meanReturns, covMatrix = getData(stocks_input, start_date, end_date)
+    results, weights, max_SR, max_SR_weights = efficientFrontier(meanReturns, covMatrix, numPortfolios, riskFreeRate)
+    max_sr_return, max_sr_volatility = portfolioPerformance(max_SR_weights, meanReturns, covMatrix)
+    plot_efficient_frontier(results, stocks_input, max_sr_volatility, max_sr_return, max_SR_weights, riskFreeRate)
